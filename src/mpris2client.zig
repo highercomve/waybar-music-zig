@@ -562,7 +562,7 @@ pub const Mpris2Client = struct {
             if (self.players.items.len > 0) {
                 self.current_player = &self.players.items[0];
             }
-            return self.printPlayerInfo();
+            return;
         }
 
         // Try to find a playing player
@@ -573,7 +573,7 @@ pub const Mpris2Client = struct {
             };
             if (std.mem.eql(u8, player.status, "Playing")) {
                 self.current_player = player;
-                return self.printPlayerInfo();
+                return;
             }
         }
 
@@ -585,7 +585,7 @@ pub const Mpris2Client = struct {
             };
             if (std.mem.eql(u8, player.status, "Paused")) {
                 self.current_player = player;
-                return self.printPlayerInfo();
+                return;
             }
         }
 
@@ -593,7 +593,7 @@ pub const Mpris2Client = struct {
         if (self.players.items.len > 0) {
             self.current_player = &self.players.items[0];
         }
-        return self.printPlayerInfo();
+        return;
     }
 
     pub fn AddMatch(self: *Mpris2Client, rule: []const u8) !void {
@@ -616,6 +616,7 @@ pub const Mpris2Client = struct {
         // Populate initial players
         try self.populatePlayers();
         try self.selectCurrentPlayer();
+        try self.printPlayerInfo();
 
         // Add the filter function to process D-Bus messages
         // The last argument is user_data, which will be a pointer to 'self'
@@ -1020,6 +1021,24 @@ fn mpris2_filter_function(
 
     const client = @as(*Mpris2Client, @ptrCast(@alignCast(clientPtr)));
 
+    if (message) |msg| {
+        const sender = c.dbus_message_get_sender(msg);
+        const path = c.dbus_message_get_path(msg);
+        const interface = c.dbus_message_get_interface(msg);
+        const member = c.dbus_message_get_member(msg);
+        const type_str = c.dbus_message_type_to_string(c.dbus_message_get_type(msg));
+
+        std.debug.print("D-Bus Message: type={s}, sender={s}, path={s}, interface={s}, member={s}\n", .{
+            cStringToString(type_str),
+            cStringToString(sender),
+            cStringToString(path),
+            cStringToString(interface),
+            cStringToString(member),
+        });
+    } else {
+        std.debug.print("Received null D-Bus message in filter function.\n", .{});
+    }
+
     // Check for NameOwnerChanged signal
     if (c.dbus_message_is_signal(message, "org.freedesktop.DBus", "NameOwnerChanged") != 0) {
         var iter: c.DBusMessageIter = undefined;
@@ -1029,7 +1048,7 @@ fn mpris2_filter_function(
         // The first argument is the name that changed
         if (c.dbus_message_iter_get_arg_type(&iter) == c.DBUS_TYPE_STRING) {
             c.dbus_message_iter_get_basic(&iter, @ptrCast(&name));
-            // std.debug.print("NameOwnerChanged: name={s}\n", .{std.mem.span(name)}); // Debug print
+            std.debug.print("NameOwnerChanged: name={s}\n", .{std.mem.span(name)}); // Debug print
 
             // Check if it's an MPRIS player
             const mpris_prefix = "org.mpris.MediaPlayer2.";
@@ -1051,6 +1070,7 @@ fn mpris2_filter_function(
                         _ = client.AddPlayer(std.mem.span(name)) catch {};
                     }
                     _ = client.selectCurrentPlayer() catch {};
+                    _ = client.printPlayerInfo() catch {};
                 }
             }
         }
@@ -1061,17 +1081,75 @@ fn mpris2_filter_function(
         var interface_name: [*c]const u8 = undefined;
         if (c.dbus_message_iter_get_arg_type(&iter) == c.DBUS_TYPE_STRING) {
             c.dbus_message_iter_get_basic(&iter, @ptrCast(&interface_name));
-            if (std.mem.eql(u8, std.mem.span(interface_name), INTERFACE ++ ".Player")) {
-                // Get the player's D-Bus name from the sender of the message
-                const sender_name = c.dbus_message_get_sender(message);
-                if (sender_name != null) {
-                    if (client.findPlayer(std.mem.span(sender_name))) |player| {
-                        _ = player.Refresh() catch {}; // Refresh the player's data
-                        std.debug.print("MPRIS player {s} properties changed.\n", .{std.mem.span(sender_name)});
+
+        std.debug.print("Property: interface={s}\n", .{std.mem.span(interface_name)}); // Debug print
+
+        if (std.mem.eql(u8, std.mem.span(interface_name), INTERFACE ++ ".Player")) {
+            // Get the player's D-Bus name from the sender of the message
+            const sender_name = c.dbus_message_get_sender(message);
+            std.debug.print("Player: name={s}\n", .{std.mem.span(sender_name)}); // Debug print
+            if (sender_name != null) {
+                if (client.findPlayer(std.mem.span(sender_name))) |player| {
+                    _ = c.dbus_message_iter_next(&iter); // Advance to the changed_properties dictionary
+                    if (c.dbus_message_iter_get_arg_type(&iter) == c.DBUS_TYPE_ARRAY) {
+                        var dict_iter: c.DBusMessageIter = undefined;
+                        c.dbus_message_iter_recurse(&iter, &dict_iter);
+                        while (c.dbus_message_iter_get_arg_type(&dict_iter) == c.DBUS_TYPE_DICT_ENTRY) {
+                            var entry_iter: c.DBusMessageIter = undefined;
+                            c.dbus_message_iter_recurse(&dict_iter, &entry_iter);
+
+                            var key: [*c]const u8 = undefined;
+                            if (c.dbus_message_iter_get_arg_type(&entry_iter) == c.DBUS_TYPE_STRING) {
+                                c.dbus_message_iter_get_basic(&entry_iter, @ptrCast(&key));
+                            }
+                            _ = c.dbus_message_iter_next(&entry_iter);
+
+                            if (std.mem.eql(u8, std.mem.span(key), "Position")) {
+                                if (c.dbus_message_iter_get_arg_type(&entry_iter) == c.DBUS_TYPE_VARIANT) {
+                                    var value_iter: c.DBusMessageIter = undefined;
+                                    c.dbus_message_iter_recurse(&entry_iter, &value_iter);
+                                    if (c.dbus_message_iter_get_arg_type(&value_iter) == c.DBUS_TYPE_INT64) {
+                                        var position: i64 = undefined;
+                                        c.dbus_message_iter_get_basic(&value_iter, @ptrCast(&position));
+                                        player.position = position;
+                                        std.debug.print("MPRIS player {s} Position changed to {d}\n", .{std.mem.span(sender_name), position});
+                                    }
+                                }
+                            } else if (std.mem.eql(u8, std.mem.span(key), "PlaybackStatus")) {
+                                if (c.dbus_message_iter_get_arg_type(&entry_iter) == c.DBUS_TYPE_VARIANT) {
+                                    var value_iter: c.DBusMessageIter = undefined;
+                                    c.dbus_message_iter_recurse(&entry_iter, &value_iter);
+                                    if (c.dbus_message_iter_get_arg_type(&value_iter) == c.DBUS_TYPE_STRING) {
+                                        var status: [*c]const u8 = undefined;
+                                        c.dbus_message_iter_get_basic(&value_iter, @ptrCast(&status));
+                                        player.allocator.free(player.status);
+                                        player.status = player.allocator.dupe(u8, std.mem.span(status)) catch {
+                                            std.debug.print("Failed to duplicate status string\n", .{});
+                                            return c.DBUS_HANDLER_RESULT_HANDLED;
+                                        };
+                                        std.debug.print("MPRIS player {s} PlaybackStatus changed to {s}\n", .{std.mem.span(sender_name), std.mem.span(status)});
+                                    }
+                                }
+                            } else if (std.mem.eql(u8, std.mem.span(key), "Metadata")) {
+                                // For metadata changes, we need to refresh all metadata properties
+                                _ = player.Refresh() catch {}; // This will get all metadata
+                                std.debug.print("MPRIS player {s} Metadata changed.\n", .{std.mem.span(sender_name)});
+                            } else {
+                                // For any other property change, just refresh everything
+                                _ = player.Refresh() catch {};
+                                std.debug.print("MPRIS player {s} property '{s}' changed, performing full refresh.\n", .{std.mem.span(sender_name), std.mem.span(key)});
+                            }
+
+                            if (c.dbus_message_iter_next(&dict_iter) == 0) {
+                                break;
+                            }
+                        }
                     }
                     _ = client.selectCurrentPlayer() catch {};
+                    _ = client.printPlayerInfo() catch {};
                 }
             }
+        }
         }
     }
     return c.DBUS_HANDLER_RESULT_HANDLED;
