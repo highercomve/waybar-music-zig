@@ -10,8 +10,8 @@ release:
 	@echo "Building for $(shell uname -m)..."
 	@zig build -Doptimize=ReleaseSmall
 	@mkdir -p $(DIST_DIR)
-	@mv zig-out/bin/$(TARGET_NAME) $(DIST_DIR)/$(TARGET_NAME)-$(ARCH)
-	@echo "Generated binary is located at: $(DIST_DIR)/$(TARGET_NAME)-$(ARCH)"
+	@mv zig-out/bin/$(TARGET_NAME) $(DIST_DIR)/$(TARGET_NAME)
+	@echo "Generated binary is located at: $(DIST_DIR)/$(TARGET_NAME)"
 
 clean:
 	@rm -rf zig-out zig-cache $(DIST_DIR)
@@ -19,4 +19,4 @@ clean:
 install:
 	@echo "Installing for $(shell uname -m)..."
 	$(MAKE) release;
-	sudo install -m 755 $(DIST_DIR)/$(TARGET_NAME)-$(ARCH) /usr/bin/$(TARGET_NAME);
+	sudo install -m 755 $(DIST_DIR)/$(TARGET_NAME) /usr/bin/$(TARGET_NAME);

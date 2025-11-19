@@ -25,9 +25,8 @@ jobs:
             - name: Build binaries
               run: |
                   make release
-
-            - name: Release
-              uses: softprops/action-gh-release@v1
-              with:
-                  files: |
-                      dist/waybar-music
+                  - name: Release
+                    uses: softprops/action-gh-release@v1
+                    with:
+                        files: |
+                            dist/waybar-music
