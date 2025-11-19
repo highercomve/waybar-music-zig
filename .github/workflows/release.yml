@@ -31,3 +31,4 @@ jobs:
               with:
                   files: |
                       dist/waybar-music
+                  token: ${{ secrets.GITHUB_TOKEN }}
