@@ -1,4 +1,5 @@
 const std = @import("std");
+const json = std.json;
 const c = @cImport({
     @cInclude("dbus/dbus.h");
     @cInclude("stdio.h");
@@ -19,6 +20,27 @@ const DBusError = extern struct {
     dummy5: u32,
     padding1: *anyopaque,
 };
+
+fn formatTime(us: i64) []const u8 {
+    const total_seconds = @divTrunc(us, 1_000_000);
+    const minutes_val = @divTrunc(total_seconds, 60);
+    const seconds_val = @rem(total_seconds, 60);
+
+    var buffer: [6]u8 = undefined; // MM:SS\0
+
+    // Minutes (up to 99 for MM:SS display)
+    const disp_minutes: u8 = @intCast(if (minutes_val > 99) 99 else minutes_val);
+    buffer[0] = @divTrunc(disp_minutes, 10) + '0';
+    buffer[1] = @rem(disp_minutes, 10) + '0';
+    buffer[2] = ':';
+
+    // Seconds (always 0-59)
+    const disp_seconds: u8 = @intCast(seconds_val); // seconds_val is always 0-59, so fits u8
+    buffer[3] = @divTrunc(disp_seconds, 10) + '0';
+    buffer[4] = @rem(disp_seconds, 10) + '0';
+
+    return buffer[0..5]; // Return slice "MM:SS"
+}
 
 const PlayerOutput = struct {
     title: []const u8,
@@ -426,6 +448,8 @@ pub const Mpris2Client = struct {
     conn: *c.DBusConnection,
     players: std.ArrayList(Player),
     player_ctld_uid: []const u8, // Store the D-Bus unique ID of the playerctld service
+    autofocus: bool,
+    current_player: ?*Player,
 
     pub fn init(allocator: std.mem.Allocator) !Mpris2Client {
         // Implementation will go here
@@ -451,6 +475,8 @@ pub const Mpris2Client = struct {
             .conn = conn,
             .players = std.ArrayList(Player).init(allocator),
             .player_ctld_uid = player_ctld_uid,
+            .autofocus = true, // Initialize autofocus to true
+            .current_player = null, // No current player initially
         };
     }
 
@@ -463,6 +489,113 @@ pub const Mpris2Client = struct {
         c.dbus_connection_unref(self.conn);
     }
 
+    pub fn printPlayerInfo(self: *Mpris2Client) !void {
+        const writer = std.io.getStdOut().writer();
+
+        if (self.current_player) |player| {
+            // Refresh the player data before printing
+            player.Refresh() catch |err| {
+                std.debug.print("Failed to refresh player {s}: {}\n", .{ player.name, err });
+                return; // Exit if refresh fails
+            };
+
+            var class_str: []const u8 = undefined;
+            var status_icon: []const u8 = undefined;
+
+            if (std.mem.eql(u8, player.status, "Playing")) {
+                class_str = "playing";
+                status_icon = "▶";
+            } else if (std.mem.eql(u8, player.status, "Paused")) {
+                class_str = "paused";
+                status_icon = "⏸";
+            } else {
+                class_str = "stopped";
+                status_icon = "⏹";
+            }
+
+            const title_str = if (player.title.len > 0) player.title else "Unknown Title";
+            const artist_str = if (player.artist.len > 0) player.artist else "Unknown Artist";
+            const album_str = if (player.album.len > 0) player.album else "Unknown Album";
+
+            var text_display_buf: [256]u8 = undefined;
+            var text_stream = std.io.fixedBufferStream(&text_display_buf);
+            var text_writer = text_stream.writer();
+
+            try text_writer.print("{s} {s}", .{ status_icon, title_str });
+            if (player.length > 0) {
+                try text_writer.print(" ({s}/{s})", .{ formatTime(player.position), formatTime(player.length) });
+            }
+            const final_text_slice = text_stream.getWritten();
+
+            var tooltip_display_buf: [512]u8 = undefined;
+            var tooltip_stream = std.io.fixedBufferStream(&tooltip_display_buf);
+            var tooltip_writer = tooltip_stream.writer();
+
+            try tooltip_writer.print("{s}\\nby {s}\\nfrom {s}\\n({s})", .{
+                title_str,
+                artist_str,
+                album_str,
+                player.name,
+            });
+            const final_tooltip_slice = tooltip_stream.getWritten();
+
+            std.debug.print(
+                \\{{"class":"{s}","text":"{s}","tooltip":"{s}"}}
+            , .{
+                class_str,
+                final_text_slice,
+                final_tooltip_slice,
+            });
+            try writer.writeAll("\n");
+        } else {
+            // No player, print empty JSON
+            try writer.writeAll("{}\n");
+        }
+    }
+
+    pub fn selectCurrentPlayer(self: *Mpris2Client) !void {
+        const arena_state = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena_state.deinit();
+        self.current_player = null; // Reset current player
+
+        if (!self.autofocus) {
+            if (self.players.items.len > 0) {
+                self.current_player = &self.players.items[0];
+            }
+            return self.printPlayerInfo();
+        }
+
+        // Try to find a playing player
+        for (self.players.items) |*player| {
+            _ = player.Refresh() catch |err| {
+                std.debug.print("Failed to refresh player {s} for autofocus: {}\n", .{ player.name, err });
+                continue; // Skip this player if refresh fails
+            };
+            if (std.mem.eql(u8, player.status, "Playing")) {
+                self.current_player = player;
+                return self.printPlayerInfo();
+            }
+        }
+
+        // If no playing player, try to find a paused player
+        for (self.players.items) |*player| {
+            _ = player.Refresh() catch |err| {
+                std.debug.print("Failed to refresh player {s} for autofocus: {}\n", .{ player.name, err });
+                continue; // Skip this player if refresh fails
+            };
+            if (std.mem.eql(u8, player.status, "Paused")) {
+                self.current_player = player;
+                return self.printPlayerInfo();
+            }
+        }
+
+        // If no playing or paused player, default to the first player in the list
+        if (self.players.items.len > 0) {
+            self.current_player = &self.players.items[0];
+        }
+        return self.printPlayerInfo();
+    }
+
     pub fn AddMatch(self: *Mpris2Client, rule: []const u8) !void {
         var arena_state = std.heap.ArenaAllocator.init(self.allocator);
         var arena = arena_state.allocator();
@@ -471,13 +604,31 @@ pub const Mpris2Client = struct {
         const rule_cstring = try arena.dupeZ(u8, rule);
         defer arena.free(rule_cstring);
 
-        c.dbus_bus_add_match(self.conn, rule_cstring.ptr, @ptrCast(null));
+        c.dbus_bus_add_match(self.conn, rule_cstring.ptr, @as(?*c.DBusError, null));
         _ = c.dbus_connection_flush(self.conn);
     }
 
     pub fn Listen(self: *Mpris2Client) !void {
-        std.debug.print("Number of players {d}", .{self.players.items.len});
-        // ... existing Listen implementation ...
+        // Add D-Bus match rules for NameOwnerChanged and PropertiesChanged
+        try self.AddMatch(MATCH_NOC);
+        try self.AddMatch(MATCH_PC);
+
+        // Populate initial players
+        try self.populatePlayers();
+        try self.selectCurrentPlayer();
+
+        // Add the filter function to process D-Bus messages
+        // The last argument is user_data, which will be a pointer to 'self'
+        if (c.dbus_connection_add_filter(self.conn, mpris2_filter_function, @ptrCast(self), null) == 0) {
+            std.debug.print("Failed to add D-Bus filter.\n", .{});
+            return PlayerError.DBusConnectionFailed;
+        }
+
+        // Enter the D-Bus message dispatch loop
+        while (true) {
+            // Read incoming messages, blocking until there is data
+            _ = c.dbus_connection_read_write_dispatch(self.conn, -1);
+        }
     }
 
     pub fn AddPlayer(self: *Mpris2Client, player_name_slice: []const u8) !void {
@@ -725,6 +876,7 @@ pub const Mpris2Client = struct {
             .position = player_internal.position,
             .length = player_internal.length,
         });
+        try self.selectCurrentPlayer();
     }
 
     pub fn RemovePlayer(self: *Mpris2Client, player_name_slice: []const u8) !void {
@@ -739,6 +891,7 @@ pub const Mpris2Client = struct {
         if (found_idx) |idx| {
             self.players.items[idx].deinit(); // Deinitialize the player
             _ = self.players.swapRemove(idx); // Remove from ArrayList
+            try self.selectCurrentPlayer();
         } else {
             std.debug.print("Player {s} not found for removal.\n", .{player_name_slice});
         }
@@ -851,17 +1004,26 @@ fn cStringToString(c_string: ?[*c]const u8) []const u8 {
 }
 
 fn mpris2_filter_function(
-    connection: *c.DBusConnection,
-    message: *c.DBusMessage,
-    user_data: *anyopaque,
-) c.DBusHandlerResult {
+    connection: ?*c.DBusConnection,
+    message: ?*c.DBusMessage,
+    user_data: ?*anyopaque,
+) callconv(.c) c.DBusHandlerResult {
     _ = connection; // Unused
-    const client: *Mpris2Client = @ptrCast(user_data);
+    if (user_data == null) {
+        return c.DBUS_HANDLER_RESULT_HANDLED;
+    }
+    const clientPtr = user_data.?;
+    // const PtrInfo = @typeInfo(Ptr);
+    // std.debug.assert(PtrInfo == .Pointer); // Must be a pointer
+    // std.debug.assert(PtrInfo.Pointer.size == .One); // Must be a single-item pointer
+    // std.debug.assert(@typeInfo(PtrInfo.Pointer.child) == .Struct); // Must point to a struct
+
+    const client = @as(*Mpris2Client, @ptrCast(@alignCast(clientPtr)));
 
     // Check for NameOwnerChanged signal
     if (c.dbus_message_is_signal(message, "org.freedesktop.DBus", "NameOwnerChanged") != 0) {
         var iter: c.DBusMessageIter = undefined;
-        c.dbus_message_iter_init(message, &iter);
+        _ = c.dbus_message_iter_init(message, &iter);
 
         var name: [*c]const u8 = undefined;
         // The first argument is the name that changed
@@ -882,18 +1044,19 @@ fn mpris2_filter_function(
                     if (std.mem.eql(u8, std.mem.span(new_owner), "")) {
                         // Player removed
                         std.debug.print("MPRIS player {s} removed.\n", .{std.mem.span(name)});
-                        _ = client.RemovePlayer(std.mem.span(name));
+                        _ = client.RemovePlayer(std.mem.span(name)) catch {};
                     } else {
                         // Player added
                         std.debug.print("MPRIS player {s} added.\n", .{std.mem.span(name)});
-                        _ = client.AddPlayer(std.mem.span(name));
+                        _ = client.AddPlayer(std.mem.span(name)) catch {};
                     }
+                    _ = client.selectCurrentPlayer() catch {};
                 }
             }
         }
     } else if (c.dbus_message_is_signal(message, "org.freedesktop.DBus.Properties", "PropertiesChanged") != 0) {
         var iter: c.DBusMessageIter = undefined;
-        c.dbus_message_iter_init(message, &iter);
+        _ = c.dbus_message_iter_init(message, &iter);
 
         var interface_name: [*c]const u8 = undefined;
         if (c.dbus_message_iter_get_arg_type(&iter) == c.DBUS_TYPE_STRING) {
@@ -903,14 +1066,13 @@ fn mpris2_filter_function(
                 const sender_name = c.dbus_message_get_sender(message);
                 if (sender_name != null) {
                     if (client.findPlayer(std.mem.span(sender_name))) |player| {
-                        _ = player.Refresh(); // Refresh the player's data
+                        _ = player.Refresh() catch {}; // Refresh the player's data
                         std.debug.print("MPRIS player {s} properties changed.\n", .{std.mem.span(sender_name)});
                     }
+                    _ = client.selectCurrentPlayer() catch {};
                 }
             }
         }
     }
-    // Message parsing logic will go here
-    // For now, just return HANDLER_RESULT_CONTINUE
     return c.DBUS_HANDLER_RESULT_HANDLED;
 }

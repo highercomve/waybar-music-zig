@@ -82,7 +82,7 @@ pub fn main() !void {
         .toggle => {
             if (player_idx) |idx| {
                 if (idx >= client.players.items.len) {
-                    std.debug.print("Player index {d} out of bounds (max {d})\n", .{idx, client.players.items.len - 1});
+                    std.debug.print("Player index {d} out of bounds (max {d})\n", .{ idx, client.players.items.len - 1 });
                     return error.PlayerIndexOutOfBounds;
                 }
                 const player = client.players.items[idx];
@@ -96,7 +96,7 @@ pub fn main() !void {
         .next => {
             if (player_idx) |idx| {
                 if (idx >= client.players.items.len) {
-                    std.debug.print("Player index {d} out of bounds (max {d})\n", .{idx, client.players.items.len - 1});
+                    std.debug.print("Player index {d} out of bounds (max {d})\n", .{ idx, client.players.items.len - 1 });
                     return error.PlayerIndexOutOfBounds;
                 }
                 const player = client.players.items[idx];
@@ -110,7 +110,7 @@ pub fn main() !void {
         .previous => {
             if (player_idx) |idx| {
                 if (idx >= client.players.items.len) {
-                    std.debug.print("Player index {d} out of bounds (max {d})\n", .{idx, client.players.items.len - 1});
+                    std.debug.print("Player index {d} out of bounds (max {d})\n", .{ idx, client.players.items.len - 1 });
                     return error.PlayerIndexOutOfBounds;
                 }
                 const player = client.players.items[idx];
@@ -132,7 +132,6 @@ pub fn main() !void {
             std.debug.print("  help                                   Show this help message.\n", .{});
         },
         .listen => {
-            std.debug.print("Starting D-Bus MPRIS event listener...\n", .{});
             try client.Listen();
         },
     }
