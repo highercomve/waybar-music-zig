@@ -65,6 +65,7 @@ pub fn main() !void {
     defer client.deinit();
 
     try client.populatePlayers();
+    try client.selectCurrentPlayer();
 
     switch (action) {
         .list => {
@@ -89,8 +90,13 @@ pub fn main() !void {
                 try player.Toggle();
                 std.debug.print("Toggled player {d}\n", .{idx});
             } else {
-                std.debug.print("Usage: {s} toggle <player_index>\n", .{args[0]});
-                return error.MissingPlayerIndex;
+                if (client.current_player) |player| {
+                    try player.Toggle();
+                    std.debug.print("Toggled current player\n", .{});
+                } else {
+                    std.debug.print("No active player found.\n", .{});
+                    return error.NoPlayerFound;
+                }
             }
         },
         .next => {
@@ -103,8 +109,13 @@ pub fn main() !void {
                 try player.Next();
                 std.debug.print("Next track for player {d}\n", .{idx});
             } else {
-                std.debug.print("Usage: {s} next <player_index>\n", .{args[0]});
-                return error.MissingPlayerIndex;
+                if (client.current_player) |player| {
+                    try player.Next();
+                    std.debug.print("Next track for current player\n", .{});
+                } else {
+                    std.debug.print("No active player found.\n", .{});
+                    return error.NoPlayerFound;
+                }
             }
         },
         .previous => {
@@ -117,22 +128,27 @@ pub fn main() !void {
                 try player.Previous();
                 std.debug.print("Previous track for player {d}\n", .{idx});
             } else {
-                std.debug.print("Usage: {s} previous <player_index>\n", .{args[0]});
-                return error.MissingPlayerIndex;
+                if (client.current_player) |player| {
+                    try player.Previous();
+                    std.debug.print("Previous track for current player\n", .{});
+                } else {
+                    std.debug.print("No active player found.\n", .{});
+                    return error.NoPlayerFound;
+                }
             }
+        },
+        .listen => {
+            try client.Listen();
         },
         .help => {
             std.debug.print("Usage: {s} <command> [args]\n", .{args[0]});
             std.debug.print("\nCommands:\n", .{});
             std.debug.print("  list                                   List all active MPRIS players and their current track information.\n", .{});
-            std.debug.print("  toggle <player_index>                  Toggle play/pause for the player at the given index.\n", .{});
-            std.debug.print("  next <player_index>                    Skip to the next track for the player at the given index.\n", .{});
-            std.debug.print("  previous <player_index>                Skip to the previous track for the player at the given index.\n", .{});
+            std.debug.print("  toggle [player_index]                  Toggle play/pause. Defaults to the current player.\n", .{});
+            std.debug.print("  next [player_index]                    Skip to the next track. Defaults to the current player.\n", .{});
+            std.debug.print("  previous [player_index]                Skip to the previous track. Defaults to the current player.\n", .{});
             std.debug.print("  listen                                 Start listening for D-Bus MPRIS events (blocking).\n", .{});
             std.debug.print("  help                                   Show this help message.\n", .{});
-        },
-        .listen => {
-            try client.Listen();
         },
     }
 }
