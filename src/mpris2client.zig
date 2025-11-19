@@ -505,10 +505,10 @@ pub const Mpris2Client = struct {
 
             if (std.mem.eql(u8, player.status, "Playing")) {
                 class_str = "playing";
-                status_icon = "▶";
+                status_icon = "⏸";
             } else if (std.mem.eql(u8, player.status, "Paused")) {
                 class_str = "paused";
-                status_icon = "⏸";
+                status_icon = "▶";
             } else {
                 class_str = "stopped";
                 status_icon = "⏹";
