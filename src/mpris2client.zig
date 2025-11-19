@@ -203,6 +203,74 @@ pub const Player = struct {
         };
     }
 
+    pub fn RefreshPosition(self: *Player) !void {
+        var err: DBusError = undefined;
+        c.dbus_error_init(@ptrCast(&err));
+        defer c.dbus_error_free(@ptrCast(&err));
+
+        const conn = c.dbus_bus_get(c.DBUS_BUS_SESSION, @ptrCast(&err));
+        if (c.dbus_error_is_set(@ptrCast(&err)) != 0) {
+            std.debug.print("D-Bus Connection Error ({s})\n", .{cStringToString(err.message)});
+            return PlayerError.DBusConnectionFailed;
+        }
+        if (conn == null) {
+            return PlayerError.DBusConnectionFailed;
+        }
+        defer c.dbus_connection_unref(conn);
+
+        var arena_state = std.heap.ArenaAllocator.init(self.allocator);
+        var arena = arena_state.allocator();
+        defer arena_state.deinit();
+
+        const player_name_cstring = try arena.dupeZ(u8, self.name);
+        defer arena.free(player_name_cstring);
+
+        const get_position_msg = c.dbus_message_new_method_call(
+            player_name_cstring.ptr,
+            "/org/mpris/MediaPlayer2",
+            "org.freedesktop.DBus.Properties",
+            "Get",
+        );
+
+        if (get_position_msg == null) {
+            std.debug.print("D-Bus Message Creation Failed (Get Position for {s})\n", .{self.name});
+            return PlayerError.DBusMessageCreationFailed;
+        }
+        defer c.dbus_message_unref(get_position_msg);
+
+        const position_iface = "org.mpris.MediaPlayer2.Player";
+        const position_prop = "Position";
+        _ = c.dbus_message_append_args(
+            get_position_msg,
+            c.DBUS_TYPE_STRING,
+            &position_iface,
+            c.DBUS_TYPE_STRING,
+            &position_prop,
+            c.DBUS_TYPE_INVALID,
+        );
+
+        const get_position_reply = c.dbus_connection_send_with_reply_and_block(conn, get_position_msg, -1, @ptrCast(&err));
+        if (c.dbus_error_is_set(@ptrCast(&err)) != 0) {
+            std.debug.print("D-Bus Reply Error (Get Position for {s}: {s})\n", .{ self.name, cStringToString(err.message) });
+            return PlayerError.DBusReplyFailed;
+        }
+
+        if (get_position_reply != null) {
+            defer c.dbus_message_unref(get_position_reply);
+            var position_iter: c.DBusMessageIter = undefined;
+            _ = c.dbus_message_iter_init(get_position_reply, &position_iter);
+            if (c.dbus_message_iter_get_arg_type(&position_iter) == c.DBUS_TYPE_VARIANT) {
+                var position_value_iter: c.DBusMessageIter = undefined;
+                c.dbus_message_iter_recurse(&position_iter, &position_value_iter);
+                if (c.dbus_message_iter_get_arg_type(&position_value_iter) == c.DBUS_TYPE_INT64) {
+                    var position: i64 = undefined;
+                    c.dbus_message_iter_get_basic(&position_value_iter, @ptrCast(&position));
+                    self.position = position;
+                }
+            }
+        }
+    }
+
     pub fn Refresh(self: *Player) !void {
         var err: DBusError = undefined;
         c.dbus_error_init(@ptrCast(&err));
@@ -627,8 +695,15 @@ pub const Mpris2Client = struct {
 
         // Enter the D-Bus message dispatch loop
         while (true) {
-            // Read incoming messages, blocking until there is data
-            _ = c.dbus_connection_read_write_dispatch(self.conn, -1);
+            // Read incoming messages, blocking until there is data or 500ms timeout
+            _ = c.dbus_connection_read_write_dispatch(self.conn, 500);
+
+            if (self.current_player) |player| {
+                if (std.mem.eql(u8, player.status, "Playing")) {
+                    _ = player.RefreshPosition() catch {};
+                    _ = self.printPlayerInfo() catch {};
+                }
+            }
         }
     }
 
