@@ -39,6 +39,8 @@ fn formatTime(buffer: []u8, us: i64) []const u8 {
 }
 
 const PlayerOutput = struct {
+    id: usize,
+    name: []const u8,
     title: []const u8,
     album: []const u8,
     artist: []const u8,
@@ -188,8 +190,10 @@ pub const Player = struct {
         _ = c.dbus_connection_flush(conn);
     }
 
-    pub fn toOutput(self: Player) PlayerOutput {
+    pub fn toOutput(self: Player, id: usize) PlayerOutput {
         return PlayerOutput{
+            .id = id,
+            .name = self.name,
             .title = self.title,
             .album = self.album,
             .artist = self.artist,

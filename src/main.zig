@@ -57,7 +57,7 @@ pub fn main() !void {
             action = .listen;
         } else {
             std.debug.print("Unknown subcommand: {s}\n", .{args[1]});
-            return error.UnknownSubcommand;
+            action = .help;
         }
     }
 
@@ -75,8 +75,7 @@ pub fn main() !void {
             }
 
             for (client.players.items, 0..) |player, i| {
-                std.debug.print("Player {d}: ", .{i});
-                try std.json.stringify(player.toOutput(), .{}, std.io.getStdOut().writer());
+                try std.json.stringify(player.toOutput(i), .{}, std.io.getStdOut().writer());
                 std.debug.print("\n", .{});
             }
         },
