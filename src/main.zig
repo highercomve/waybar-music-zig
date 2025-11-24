@@ -61,7 +61,22 @@ pub fn main() !void {
         }
     }
 
-    var client = try mpris2client.Mpris2Client.init(allocator);
+    var max_len: usize = 20;
+    for (args, 0..) |arg, i| {
+        if (std.mem.eql(u8, arg, "--max-len")) {
+            if (i + 1 < args.len) {
+                max_len = std.fmt.parseUnsigned(usize, args[i + 1], 10) catch |err| {
+                    std.debug.print("Invalid max-len: {any}\n", .{err});
+                    return err;
+                };
+            } else {
+                std.debug.print("Missing value for --max-len\n", .{});
+                return error.MissingArgument;
+            }
+        }
+    }
+
+    var client = try mpris2client.Mpris2Client.init(allocator, max_len);
     defer client.deinit();
 
     try client.populatePlayers();
@@ -74,10 +89,21 @@ pub fn main() !void {
                 return;
             }
 
+            const stdout_file = std.fs.File.stdout();
+            var stdout_buffer: [4096]u8 = undefined;
+            var stdout_writer = stdout_file.writer(&stdout_buffer);
+            const stdout = &stdout_writer.interface;
+
             for (client.players.items, 0..) |player, i| {
-                try std.json.stringify(player.toOutput(i), .{}, std.io.getStdOut().writer());
-                std.debug.print("\n", .{});
+                var out: std.io.Writer.Allocating = .init(allocator);
+                try std.json.Stringify.value(player.toOutput(i), .{ .whitespace = .indent_2 }, &out.writer);
+                var arr = out.toArrayList();
+                defer arr.deinit(allocator);
+
+                try stdout.writeAll(arr.items);
+                try stdout.writeAll("\n");
             }
+            try stdout.flush();
         },
         .toggle => {
             if (player_idx) |idx| {

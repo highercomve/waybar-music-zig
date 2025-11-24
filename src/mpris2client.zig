@@ -452,8 +452,9 @@ pub const Mpris2Client = struct {
     current_player: ?*Player,
     last_printed_output: std.ArrayList(u8),
     scroll_positions: std.StringHashMap(usize),
+    max_len: usize,
 
-    pub fn init(allocator: std.mem.Allocator) !Mpris2Client {
+    pub fn init(allocator: std.mem.Allocator, max_len: usize) !Mpris2Client {
         // Implementation will go here
         var err: DBusError = undefined;
         c.dbus_error_init(@ptrCast(&err));
@@ -475,12 +476,13 @@ pub const Mpris2Client = struct {
         return Mpris2Client{
             .allocator = allocator,
             .conn = conn,
-            .players = std.ArrayList(Player).init(allocator),
+            .players = std.ArrayList(Player){},
             .player_ctld_uid = player_ctld_uid,
             .autofocus = true, // Initialize autofocus to true
             .current_player = null, // No current player initially
-            .last_printed_output = std.ArrayList(u8).init(allocator),
+            .last_printed_output = std.ArrayList(u8){},
             .scroll_positions = std.StringHashMap(usize).init(allocator),
+            .max_len = max_len,
         };
     }
 
@@ -488,20 +490,19 @@ pub const Mpris2Client = struct {
         for (self.players.items) |player| {
             player.deinit();
         }
-        self.players.deinit();
+        self.players.deinit(self.allocator);
         self.allocator.free(self.player_ctld_uid);
-        self.last_printed_output.deinit();
+        self.last_printed_output.deinit(self.allocator);
         self.scroll_positions.deinit();
         c.dbus_connection_unref(self.conn);
     }
 
     pub fn printPlayerInfo(self: *Mpris2Client) !void {
-        var current_output_buffer = std.ArrayList(u8).init(self.allocator);
-        defer current_output_buffer.deinit();
-        var current_output_writer = current_output_buffer.writer();
+        var current_output_buffer = std.ArrayList(u8){};
+        defer current_output_buffer.deinit(self.allocator);
+        var current_output_writer = current_output_buffer.writer(self.allocator);
 
         if (self.current_player) |player| {
-            const max_len = 20;
             const separator = " | ";
 
             var class_str: []const u8 = undefined;
@@ -528,13 +529,20 @@ pub const Mpris2Client = struct {
 
             try text_writer.print("{s} ", .{status_icon});
 
-            if (title_str.len > max_len) {
-                var scroll_pos = self.scroll_positions.get(player.name) orelse 0;
+            if (title_str.len > self.max_len) {
+                var scroll_pos: usize = 0;
+                if (self.scroll_positions.get(player.name)) |pos| {
+                    scroll_pos = pos;
+                } else {
+                    // New player in scroll map, dupe the key
+                    const key = try self.allocator.dupe(u8, player.name);
+                    try self.scroll_positions.put(key, 0);
+                }
 
                 const scrolling_text = try std.fmt.allocPrint(self.allocator, "{s}{s}{s}", .{ title_str, separator, title_str });
                 defer self.allocator.free(scrolling_text);
 
-                const window_end = @min(scroll_pos + max_len, scrolling_text.len);
+                const window_end = @min(scroll_pos + self.max_len, scrolling_text.len);
                 const title_to_display = scrolling_text[scroll_pos..window_end];
 
                 try text_writer.print("{s}", .{title_to_display});
@@ -544,6 +552,7 @@ pub const Mpris2Client = struct {
                     scroll_pos = 0;
                 }
 
+                // Update the value, key is already there and owned
                 try self.scroll_positions.put(player.name, scroll_pos);
             } else {
                 try text_writer.print("{s}", .{title_str});
@@ -587,11 +596,16 @@ pub const Mpris2Client = struct {
 
         // Compare with last printed output and print only if different
         if (!std.mem.eql(u8, current_output_buffer.items, self.last_printed_output.items)) {
-            const writer = std.io.getStdOut().writer();
-            try writer.writeAll(current_output_buffer.items);
+            const stdout_file = std.fs.File.stdout();
+            var stdout_buffer: [4096]u8 = undefined;
+            var stdout_writer = stdout_file.writer(&stdout_buffer);
+            const stdout = &stdout_writer.interface;
 
-            self.last_printed_output.clearAndFree();
-            try self.last_printed_output.appendSlice(current_output_buffer.items);
+            try stdout.writeAll(current_output_buffer.items);
+            try stdout.flush();
+
+            self.last_printed_output.clearAndFree(self.allocator);
+            try self.last_printed_output.appendSlice(self.allocator, current_output_buffer.items);
         }
     }
 
@@ -636,14 +650,38 @@ pub const Mpris2Client = struct {
                 player.deinit();
             }
             self.players.clearRetainingCapacity();
-            self.scroll_positions.clearAndFree();
+            // Do NOT clear scroll_positions here, we want to persist them.
 
             try self.populatePlayers();
             try self.selectCurrentPlayer();
 
+            // Garbage collect scroll_positions
+            var keys_to_remove = std.ArrayList([]const u8){};
+            defer keys_to_remove.deinit(self.allocator);
+
+            var it = self.scroll_positions.iterator();
+            while (it.next()) |entry| {
+                const name = entry.key_ptr.*;
+                var found = false;
+                for (self.players.items) |player| {
+                    if (std.mem.eql(u8, player.name, name)) {
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) {
+                    try keys_to_remove.append(self.allocator, name);
+                }
+            }
+
+            for (keys_to_remove.items) |key| {
+                _ = self.scroll_positions.remove(key);
+                self.allocator.free(key);
+            }
+
             try self.printPlayerInfo();
 
-            std.time.sleep(std.time.ns_per_s);
+            std.Thread.sleep(std.time.ns_per_s);
         }
     }
 
@@ -670,14 +708,14 @@ pub const Mpris2Client = struct {
         defer arena.free(player_name_cstring);
 
         var player_internal = PlayerInternal{
-            .title = std.ArrayList(u8).init(self.allocator),
-            .album = std.ArrayList(u8).init(self.allocator),
-            .artist = std.ArrayList(u8).init(self.allocator),
-            .status = std.ArrayList(u8).init(self.allocator),
+            .title = std.ArrayList(u8){},
+            .album = std.ArrayList(u8){},
+            .artist = std.ArrayList(u8){},
+            .status = std.ArrayList(u8){},
             .length = 0,
             .position = 0,
         };
-        defer player_internal.deinit();
+        defer player_internal.deinit(self.allocator);
 
         // Get Metadata
         const get_msg = c.dbus_message_new_method_call(
@@ -740,7 +778,7 @@ pub const Mpris2Client = struct {
                                 if (c.dbus_message_iter_get_arg_type(&value_iter) == c.DBUS_TYPE_STRING) {
                                     var title: [*c]const u8 = undefined;
                                     c.dbus_message_iter_get_basic(&value_iter, @ptrCast(&title));
-                                    try player_internal.title.appendSlice(std.mem.span(title));
+                                    try player_internal.title.appendSlice(self.allocator, std.mem.span(title));
                                 }
                             }
                         } else if (std.mem.eql(u8, std.mem.span(key), "xesam:album")) {
@@ -750,7 +788,7 @@ pub const Mpris2Client = struct {
                                 if (c.dbus_message_iter_get_arg_type(&value_iter) == c.DBUS_TYPE_STRING) {
                                     var album: [*c]const u8 = undefined;
                                     c.dbus_message_iter_get_basic(&value_iter, @ptrCast(&album));
-                                    try player_internal.album.appendSlice(std.mem.span(album));
+                                    try player_internal.album.appendSlice(self.allocator, std.mem.span(album));
                                 }
                             }
                         } else if (std.mem.eql(u8, std.mem.span(key), "mpris:length")) {
@@ -773,7 +811,7 @@ pub const Mpris2Client = struct {
                                     while (c.dbus_message_iter_get_arg_type(&artist_iter) == c.DBUS_TYPE_STRING) {
                                         var artist: [*c]const u8 = undefined;
                                         c.dbus_message_iter_get_basic(&artist_iter, @ptrCast(&artist));
-                                        try player_internal.artist.appendSlice(std.mem.span(artist));
+                                        try player_internal.artist.appendSlice(self.allocator, std.mem.span(artist));
                                         if (c.dbus_message_iter_next(&artist_iter) == 0) {
                                             break;
                                         }
@@ -831,7 +869,7 @@ pub const Mpris2Client = struct {
                 if (c.dbus_message_iter_get_arg_type(&status_value_iter) == c.DBUS_TYPE_STRING) {
                     var status: [*c]const u8 = undefined;
                     c.dbus_message_iter_get_basic(&status_value_iter, @ptrCast(&status));
-                    try player_internal.status.appendSlice(std.mem.span(status));
+                    try player_internal.status.appendSlice(self.allocator, std.mem.span(status));
                 }
             }
         }
@@ -882,7 +920,7 @@ pub const Mpris2Client = struct {
             }
         }
 
-        try self.players.append(Player{
+        try self.players.append(self.allocator, Player{
             .allocator = self.allocator,
             .name = try self.allocator.dupe(u8, player_name_slice),
             .title = try self.allocator.dupe(u8, player_internal.title.items),
@@ -998,11 +1036,11 @@ const PlayerInternal = struct {
     position: i64,
     status: std.ArrayList(u8),
 
-    pub fn deinit(self: PlayerInternal) void {
-        self.title.deinit();
-        self.album.deinit();
-        self.artist.deinit();
-        self.status.deinit();
+    pub fn deinit(self: *PlayerInternal, allocator: std.mem.Allocator) void {
+        self.title.deinit(allocator);
+        self.album.deinit(allocator);
+        self.artist.deinit(allocator);
+        self.status.deinit(allocator);
     }
 };
 

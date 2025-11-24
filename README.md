@@ -6,7 +6,7 @@ A small program to control MPRIS-compatible music players, intended for use with
 
 This project has two main dependencies:
 
-*   **Zig 0.14.1 or later:** The programming language and build system.
+*   **Zig 0.15.0 or later:** The programming language and build system.
 *   **D-Bus development library:** For communicating with MPRIS players.
 
 ### 1. Install Zig
@@ -15,8 +15,8 @@ A Zig version manager is recommended for easy installation and management. We su
 
 After installing `zvm`, you can get the correct Zig version by running:
 ```sh
-zvm i 0.14.1
-zvm use 0.14.1
+zvm i 0.15.2
+zvm use 0.15.2
 ```
 
 ### 2. Install D-Bus
@@ -62,7 +62,7 @@ The compiled binaries can be found in `zig-out/bin/`.
 
 | Command | Description |
 | --- | --- |
-| `listen` | Listens for MPRIS events and prints player state changes as JSON. This is the main command for Waybar integration. |
+| `listen [--max-len <N>]` | Listens for MPRIS events and prints player state changes as JSON. This is the main command for Waybar integration. Optional `--max-len` sets the scrolling window size (default 20). |
 | `list` | Lists all available players. |
 | `toggle [player_index]` | Toggles play/pause for the specified player. If no index is provided, it controls the current active player. |
 | `next [player_index]` | Skips to the next track for the specified player. If no index is provided, it controls the current active player. |
@@ -76,7 +76,7 @@ Add the following to your Waybar config file:
 ```json
 "custom/waybar-music": {
     "return-type": "json",
-    "exec": "waybar-music listen",
+    "exec": "waybar-music listen --max-len 20",
     "on-click": "waybar-music toggle",
     "on-click-right": "waybar-music next",
     "on-scroll-up": "waybar-music next",
@@ -87,7 +87,7 @@ Add the following to your Waybar config file:
 ### Waybar Configuration Explained
 
 *   `"return-type": "json"`: This is required for Waybar to understand the output of `waybar-music`.
-*   `"exec": "waybar-music listen"`: This command is executed by Waybar to get the music information. It listens for events and prints updates.
+*   `"exec": "waybar-music listen --max-len 20"`: This command is executed by Waybar to get the music information. It listens for events and prints updates. You can adjust `--max-len` to control the scrolling text width.
 *   `"on-click": "waybar-music toggle"`: When you left-click the Waybar module, it will send the `toggle` command.
 *   `"on-click-right": "waybar-music next"`: When you right-click the Waybar module, it will skip to the next track.
 *   `"on-scroll-up": "waybar-music next"`: When you scroll up on the Waybar module, it will skip to the next track.
